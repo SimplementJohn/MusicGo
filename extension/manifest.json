@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "MusicGo",
+  "version": "1.0.0",
+  "description": "Télécharge les vidéos YouTube en MP3 via MusicGo",
+  "permissions": [],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "http://localhost:8080/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/watch*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-dotenv==1.0.1
+yt-dlp>=2024.12.13
+python-multipart==0.0.20
+mutagen>=1.47.0
