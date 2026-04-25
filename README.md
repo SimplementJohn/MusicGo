@@ -35,7 +35,7 @@ Interface sombre et réactive, file d'attente avec progression en temps réel, p
 <br/><sub><b>Interface principale</b></sub>
 </td>
 <td align="center" width="50%">
-<img src="screenshots/youtube.png" alt="Extension YouTube" width="100%"/>
+<img src="screenshots/extention.png" alt="Extension YouTube" width="100%"/>
 <br/><sub><b>Extension dans la barre YouTube</b></sub>
 </td>
 </tr>
