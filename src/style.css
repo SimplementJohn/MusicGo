@@ -489,6 +489,22 @@ html, body {
 .sf-browse-row .sf-input { flex: 1; }
 .sf-browse-row .btn { flex-shrink: 0; }
 .sf-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.sf-toggle-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.toggle-label { font-size: 13px; color: var(--text); }
+.toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+    position: absolute; inset: 0; background: var(--border);
+    border-radius: 22px; cursor: pointer; transition: background 0.2s;
+}
+.toggle-slider::before {
+    content: ''; position: absolute; width: 16px; height: 16px;
+    left: 3px; top: 3px; background: #fff; border-radius: 50%;
+    transition: transform 0.2s;
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--accent); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); }
+.toggle-switch input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
 .sf-section {
     font-size: 11px; font-weight: 600; color: var(--text-muted);
     text-transform: uppercase; letter-spacing: 0.06em;

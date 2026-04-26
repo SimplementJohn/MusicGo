@@ -152,6 +152,10 @@ function renderApp() {
                         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
                         Audio
                     </button>
+                    <button class="stab" data-stab="systeme">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+                        Système
+                    </button>
                     <button class="stab" data-stab="info">
                         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
                         Info
@@ -190,7 +194,20 @@ function renderApp() {
                     </div>
                 </div>
 
-                
+                <div id="stab-systeme" class="stab-panel hidden">
+                    <div class="sf">
+                        <label>Démarrage avec Windows</label>
+                        <div class="sf-toggle-row">
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="s-startup"/>
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span id="s-startup-label" class="toggle-label">Lancer MusicGo au démarrage (minimisé dans le tray)</span>
+                        </div>
+                        <span id="s-startup-msg" class="settings-msg" style="margin-top:6px;display:block"></span>
+                    </div>
+                </div>
+
                 <div id="stab-info" class="stab-panel hidden">
                     <div class="sf"><label>Version</label><input type="text" id="s-version" class="sf-input" readonly value="v${APP_VERSION}"/></div>
                 </div>
@@ -713,7 +730,7 @@ function renderQueueItem(item) {
                 </div>
                 <div class="progress-details">
                     <div class="progress-info">
-                        ${item.phase_label ? `<span class="progress-phase">${item.phase_label}</span>` : ''}
+                        ${item.phase_label ? `<span class="progress-phase">${escapeHtml(item.phase_label)}</span>` : ''}
                         ${item.filename ? `<span>${escapeHtml(item.filename)}</span>` : ''}
                     </div>
                     <span>${Math.round(item.progress)}%</span>
@@ -741,7 +758,7 @@ function updateItemProgress(id, item) {
 
     const details = el.querySelector('.progress-details')
     if (details) {
-        const phaseHtml = item.phase_label ? `<span class="progress-phase">${item.phase_label}</span>` : ''
+        const phaseHtml = item.phase_label ? `<span class="progress-phase">${escapeHtml(item.phase_label)}</span>` : ''
         const fileHtml = item.filename ? `<span>${escapeHtml(item.filename)}</span>` : ''
         details.innerHTML = `<div class="progress-info">${phaseHtml}${fileHtml}</div><span>${Math.round(item.progress)}%</span>`
     }
@@ -958,11 +975,18 @@ async function refreshState() {
 
 // === Settings modal ===
 async function openSettings() {
-    const res = await apiGet('/api/settings')
+    const [res, startupRes] = await Promise.all([
+        apiGet('/api/settings'),
+        apiGet('/api/startup').catch(() => ({ enabled: false, supported: false })),
+    ])
     $('#s-dl-dir').value = res.download_dir || ''
     $('#s-format').value = res.default_format || 'mp3'
     $('#s-quality').value = res.default_quality || '320'
     $('#s-samplerate').value = res.default_samplerate || '48000'
+    const startupToggle = $('#s-startup')
+    startupToggle.checked = !!startupRes.enabled
+    startupToggle.disabled = !startupRes.supported
+    $('#s-startup-msg').textContent = ''
     $('#settings-msg').textContent = ''
     $('#settings-msg').className = 'settings-msg'
     $$('.stab').forEach((b) => b.classList.remove('active'))
@@ -1005,6 +1029,27 @@ $('#s-dl-browse').addEventListener('click', async () => {
 
 $('#settings-close').addEventListener('click', closeSettings)
 settingsBackdrop.addEventListener('click', (e) => { if (e.target === settingsBackdrop) closeSettings() })
+
+$('#s-startup').addEventListener('change', async (e) => {
+    const msgEl = $('#s-startup-msg')
+    msgEl.textContent = ''
+    msgEl.className = 'settings-msg'
+    try {
+        const res = await apiPost('/api/startup', { enabled: e.target.checked })
+        if (res.ok) {
+            msgEl.textContent = e.target.checked ? '✓ Activé' : '✓ Désactivé'
+            msgEl.className = 'settings-msg ok'
+        } else {
+            e.target.checked = !e.target.checked
+            msgEl.textContent = res.detail || 'Erreur'
+            msgEl.className = 'settings-msg err'
+        }
+    } catch {
+        e.target.checked = !e.target.checked
+        msgEl.textContent = 'Erreur réseau'
+        msgEl.className = 'settings-msg err'
+    }
+})
 
 // Tab switching
 $$('.stab').forEach(btn => {

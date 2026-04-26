@@ -226,6 +226,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Security headers — CSP + clickjacking + MIME sniff + referrer
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https:; "
+    "font-src 'self' data:; "
+    "connect-src 'self' ws://127.0.0.1:8080 ws://localhost:8080; "
+    "media-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = _CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return response
+
 # --- Pré-compilation des regex hot-path ---
 RE_PROGRESS_PCT   = re.compile(r"(\d+\.?\d*)%")
 RE_SPEED          = re.compile(r"at\s+(\S+/s)")
@@ -1193,6 +1217,72 @@ async def api_save_settings(body: dict):
     except Exception as e:
         log.warning("setup_download_dir après save: %s", e)
     return {"ok": True}
+
+
+@app.get("/api/startup")
+async def api_get_startup():
+    """Verifie si MusicGo est configure pour demarrer avec Windows."""
+    if os.name != "nt":
+        return {"enabled": False, "supported": False}
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_READ,
+        )
+        try:
+            winreg.QueryValueEx(key, "MusicGo")
+            enabled = True
+        except FileNotFoundError:
+            enabled = False
+        finally:
+            winreg.CloseKey(key)
+        return {"enabled": enabled, "supported": True}
+    except Exception as e:
+        log.warning("api_get_startup: %s", e)
+        return {"enabled": False, "supported": False}
+
+
+@app.post("/api/startup")
+async def api_set_startup(body: dict):
+    """Active ou desactive le demarrage automatique avec Windows."""
+    if os.name != "nt":
+        return {"ok": False, "detail": "Non supporte sur cette plateforme"}
+    enabled = bool(body.get("enabled", False))
+    try:
+        import winreg
+        # Cherche musicgo_launcher.exe — plusieurs emplacements possibles
+        candidates = [
+            Path(sys.executable).parent.parent / "musicgo_launcher.exe",  # python/../launcher
+            Path(sys.executable).parent / "musicgo_launcher.exe",         # meme dossier
+            Path(__file__).parent.parent / "musicgo_launcher.exe",        # app/../launcher
+            Path("C:/Program Files/MusicGo/musicgo_launcher.exe"),        # install path defaut
+        ]
+        launcher = next((p for p in candidates if p.exists()), None)
+        if launcher is None:
+            log.warning("api_set_startup: launcher introuvable, candidats=%s", candidates)
+            return {"ok": False, "detail": f"Launcher introuvable. sys.executable={sys.executable}"}
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        )
+        try:
+            if enabled:
+                winreg.SetValueEx(key, "MusicGo", 0, winreg.REG_SZ,
+                                  f'"{launcher}" --minimized')
+            else:
+                try:
+                    winreg.DeleteValue(key, "MusicGo")
+                except FileNotFoundError:
+                    pass
+        finally:
+            winreg.CloseKey(key)
+        return {"ok": True}
+    except Exception as e:
+        log.warning("api_set_startup: %s", e)
+        return {"ok": False, "detail": str(e)}
 
 
 @app.get("/api/library")

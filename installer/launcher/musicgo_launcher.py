@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """MusicGo Launcher - demarre le backend et ouvre Chromium portable en mode app."""
 
 import io
@@ -15,7 +15,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-# Log file dans %TEMP% â€” visible meme si pas de console
+# Log file dans %TEMP% — visible meme si pas de console
 LOG_FILE = Path(tempfile.gettempdir()) / "musicgo_launcher.log"
 
 class _Tee:
@@ -57,7 +57,7 @@ try:
 except Exception as _e:
     pass
 
-# UTF-8 reconfigure (apres redirection â€” peut etre no-op si _Tee)
+# UTF-8 reconfigure (apres redirection — peut etre no-op si _Tee)
 try:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -82,10 +82,15 @@ CHROMIUM_ZIP_URL = (
     "https://github.com/macchrome/winchrome/releases/download/v124.0.6367.82-r1274125-Win64/"
     "124.0.6367.82-r1274125_chrome-win.zip"
 )
-# Fallback: on essaie plusieurs sources
 CHROMIUM_FALLBACK_URLS = [
     CHROMIUM_ZIP_URL,
 ]
+
+# Shared state
+_backend_proc = None
+_quit_event = threading.Event()
+_tray_lock = threading.Lock()
+_tray_running = False
 
 
 def log(msg: str, level: str = "INFO") -> None:
@@ -117,12 +122,48 @@ def port_in_use(host: str, port: int) -> bool:
         return False
 
 
+_singleton_mutex_handle = None
+
+def acquire_singleton() -> bool:
+    """Mutex Windows global. Retourne True si c'est la 1ere instance, False sinon."""
+    global _singleton_mutex_handle
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        # Local\\ scope = par session utilisateur (pas Global\\ qui exige privileges)
+        handle = kernel32.CreateMutexW(None, False, "Local\\MusicGoLauncherSingleton")
+        if not handle:
+            return True  # fallback permissif
+        last_err = kernel32.GetLastError()
+        if last_err == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            return False
+        _singleton_mutex_handle = handle  # garde reference
+        return True
+    except Exception:
+        return True
+
+
+def is_musicgo_running(host: str, port: int) -> bool:
+    """Verifie qu'une instance MusicGo valide repond sur le port."""
+    if not port_in_use(host, port):
+        return False
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"http://{host}:{port}/", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 def wait_for_server(host: str, port: int, timeout: float = 30.0, proc=None) -> bool:
     start = time.time()
     while time.time() - start < timeout:
         if port_in_use(host, port):
             return True
-        # Detection mort precoce du backend (poll != None = process termine)
         if proc is not None and proc.poll() is not None:
             return False
         time.sleep(0.3)
@@ -228,7 +269,8 @@ def find_system_chromium() -> str | None:
     return None
 
 
-def open_app_window(url: str) -> bool:
+def open_app_window(url: str) -> "subprocess.Popen | None":
+    """Ouvre l'app dans Chromium. Retourne le process Chromium ou None si fallback."""
     local = os.environ.get("LOCALAPPDATA", "")
     profile_dir = Path(local) / "MusicGo" / "chromium-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -252,7 +294,7 @@ def open_app_window(url: str) -> bool:
 
     if exe:
         try:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [
                     str(exe),
                     f"--app={url}",
@@ -264,16 +306,16 @@ def open_app_window(url: str) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            return True
+            return proc
         except Exception as e:
             log(f"Lancement navigateur echoue: {e}", "WARN")
 
-    # 3. Fallback navigateur par defaut
+    # 3. Fallback navigateur par defaut (pas de tracking process)
     try:
         webbrowser.open(url)
     except Exception:
         pass
-    return False
+    return None
 
 
 def config_path() -> Path:
@@ -284,13 +326,148 @@ def config_path() -> Path:
 def needs_setup() -> bool:
     return False
 
+
+# ---------------------------------------------------------------------------
+# System tray
+# ---------------------------------------------------------------------------
+
+def _load_tray_image(root: Path):
+    """Charge l'icone pour le tray. Retourne une PIL.Image."""
+    try:
+        from PIL import Image
+        # Essaie musicgo.ico depuis le dossier d'installation
+        ico = root / "musicgo.ico"
+        if ico.exists():
+            img = Image.open(ico)
+            img = img.convert("RGBA")
+            # Prend la frame 32x32 si disponible
+            try:
+                img.seek(0)
+                sizes = []
+                try:
+                    while True:
+                        sizes.append((img.size, img.tell()))
+                        img.seek(img.tell() + 1)
+                except EOFError:
+                    pass
+                # Choisit la frame 32x32 ou 16x16
+                for size, frame in sizes:
+                    if size == (32, 32):
+                        img.seek(frame)
+                        return img.copy().convert("RGBA")
+                img.seek(0)
+                return img.copy().convert("RGBA")
+            except Exception:
+                return img.convert("RGBA")
+        # Fallback: carre violet
+        img = Image.new("RGBA", (32, 32), (99, 102, 241, 255))
+        return img
+    except ImportError:
+        return None
+
+
+def run_tray(root: Path, url: str) -> None:
+    """Affiche l'icone dans le tray systeme. Bloquant jusqu'a Quitter."""
+    global _tray_running, _tray_lock
+
+    with _tray_lock:
+        if _tray_running:
+            return
+        _tray_running = True
+
+    try:
+        import pystray
+        from PIL import Image
+    except ImportError:
+        log("pystray/Pillow non disponible — tray desactive", "WARN")
+        _tray_running = False
+        return
+
+    img = _load_tray_image(root)
+    if img is None:
+        img = Image.new("RGBA", (32, 32), (99, 102, 241, 255))
+
+    icon_ref = [None]  # liste pour mutabilite dans closures
+
+    def on_open(icon, item):
+        log("Tray: ouverture MusicGo")
+        icon.stop()
+        # Ouvre Chromium et surveille le nouveau process
+        chrom = open_app_window(url)
+        t = threading.Thread(target=_watch_chromium, args=(chrom, root, url), daemon=True)
+        t.start()
+
+    def on_quit(icon, item):
+        log("Tray: quitter MusicGo")
+        icon.stop()
+        _do_quit()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("Ouvrir MusicGo", on_open, default=True),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Quitter MusicGo", on_quit),
+    )
+    icon = pystray.Icon("MusicGo", img, "MusicGo", menu)
+    icon_ref[0] = icon
+    log("Tray systeme actif")
+    icon.run()  # bloquant
+    _tray_running = False
+
+
+def _watch_chromium(chrom_proc: "subprocess.Popen | None", root: Path, url: str) -> None:
+    """Surveille le process Chromium. Quand il se ferme, affiche le tray."""
+    if chrom_proc is None:
+        # Pas de process a surveiller (fallback navigateur par defaut)
+        log("Pas de process Chromium a surveiller")
+        return
+    log(f"Surveillance Chromium PID {chrom_proc.pid}")
+    chrom_proc.wait()
+    if _quit_event.is_set():
+        return
+    log("Chromium ferme — affichage tray systeme")
+    run_tray(root, url)
+
+
+def _do_quit() -> None:
+    """Arrete le backend et signale la fin du launcher."""
+    global _backend_proc
+    _quit_event.set()
+    try:
+        if _backend_proc is not None and _backend_proc.poll() is None:
+            _backend_proc.terminate()
+            try:
+                _backend_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _backend_proc.kill()
+    except Exception as e:
+        log(f"Erreur arret backend: {e}", "WARN")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main() -> int:
+    global _backend_proc
+
+    minimized = "--minimized" in sys.argv
+
+    # Empeche 2 launchers concurrents (autostart + click manuel race)
+    if not acquire_singleton():
+        print("[INFO] Instance MusicGo deja en cours, sortie propre.", flush=True)
+        url_check = f"http://127.0.0.1:{APP_PORT}"
+        if not minimized and is_musicgo_running(APP_HOST, APP_PORT):
+            open_app_window(url_check)
+        return 0
+
     root = install_dir()
     print(LOGO)
     log(f"Dossier d'installation: {root}")
     log(f"Python interpreter: {sys.executable}")
     log(f"Python version: {sys.version}")
     log(f"sys.path: {sys.path}")
+    if minimized:
+        log("Mode: demarre minimise dans le tray")
 
     python_log_exe = root / "python" / "python.exe"
     python_exe = python_log_exe if python_log_exe.exists() else (root / "python" / "pythonw.exe")
@@ -307,12 +484,22 @@ def main() -> int:
         show_error(f"app.py introuvable :\n{app_py}\n\nReinstallez MusicGo.")
         return 1
 
+    url = f"http://127.0.0.1:{APP_PORT}"
+
     if port_in_use(APP_HOST, APP_PORT):
-        log(f"Port {APP_PORT} deja utilise, ouverture sur instance existante.")
-        url = f"http://localhost:{APP_PORT}"
-        open_app_window(url)
-        time.sleep(3)
-        return 0
+        if is_musicgo_running(APP_HOST, APP_PORT):
+            log(f"Instance MusicGo deja active sur {APP_PORT}, ouverture fenetre.")
+            if not minimized:
+                open_app_window(url)
+                time.sleep(3)
+            return 0
+        else:
+            log(f"Port {APP_PORT} occupe par autre process (pas MusicGo)", "ERR")
+            show_error(
+                f"Port {APP_PORT} deja utilise par une autre application.\n\n"
+                "Fermez l'application qui occupe ce port et relancez MusicGo."
+            )
+            return 1
 
     env = build_env(root)
     log(f"PYTHONPATH: {env.get('PYTHONPATH', '')}")
@@ -377,13 +564,13 @@ def main() -> int:
         stderr=subprocess.STDOUT,
         creationflags=creationflags,
     )
+    _backend_proc = proc
     log(f"Backend PID: {proc.pid}")
 
     t = threading.Thread(target=pipe_output, args=(proc.stdout, "[backend]"), daemon=True)
     t.start()
 
     if not wait_for_server(APP_HOST, APP_PORT, timeout=120, proc=proc):
-        # Recupere les logs backend deja captures
         time.sleep(0.5)
         died = proc.poll() is not None
         exit_code = proc.returncode if died else None
@@ -395,7 +582,7 @@ def main() -> int:
                 "Voir log pour traceback Python complet."
             )
         else:
-            log("Le serveur n'a pas demarre a temps (60s).", "ERR")
+            log("Le serveur n'a pas demarre a temps (120s).", "ERR")
             try:
                 proc.terminate()
                 proc.wait(timeout=3)
@@ -413,25 +600,34 @@ def main() -> int:
             )
         return 1
 
-    url = f"http://localhost:{APP_PORT}"
     log(f"Serveur pret: {url}", "OK")
-    open_app_window(url)
 
-    log("MusicGo tourne. Fermez cette fenetre pour arreter le serveur.")
+    if minimized:
+        # Demarre directement dans le tray sans ouvrir Chromium
+        log("Demarrage minimise — tray systeme sans ouvrir Chromium")
+        tray_thread = threading.Thread(target=run_tray, args=(root, url), daemon=True)
+        tray_thread.start()
+    else:
+        # Ouvre Chromium et surveille sa fermeture
+        chrom_proc = open_app_window(url)
+        watch_thread = threading.Thread(
+            target=_watch_chromium, args=(chrom_proc, root, url), daemon=True
+        )
+        watch_thread.start()
+
+    log("MusicGo tourne. Fermeture de la fenetre Chromium minimise dans le tray.")
+
+    # Attend signal quitter ou mort inattendue du backend
     try:
-        proc.wait()
+        while not _quit_event.is_set():
+            if proc.poll() is not None:
+                log(f"Backend arrete (code {proc.returncode})", "WARN")
+                _quit_event.set()
+                break
+            time.sleep(1)
     except KeyboardInterrupt:
         log("Arret demande...")
-    finally:
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-        except Exception:
-            pass
+        _do_quit()
 
     log("MusicGo arrete.", "OK")
     return 0

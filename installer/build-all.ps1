@@ -17,9 +17,21 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $ScriptDir
 
-function Write-Step($msg) { Write-Host "`n######## $msg ########" -ForegroundColor Magenta }
-function Write-Ok($msg)   { Write-Host "[OK] $msg" -ForegroundColor Green }
-function Write-Err($msg)  { Write-Host "[XX] $msg" -ForegroundColor Red }
+$script:_buildSw = [Diagnostics.Stopwatch]::StartNew()
+$script:_stepSw  = [Diagnostics.Stopwatch]::StartNew()
+$script:_stepName = $null
+
+function Write-Step($msg) {
+    if ($script:_stepName -ne $null) {
+        $s = [math]::Round($script:_stepSw.Elapsed.TotalSeconds, 1)
+        Write-Host "    [temps: ${s}s]" -ForegroundColor DarkGray
+    }
+    $script:_stepName = $msg
+    $script:_stepSw.Restart()
+    Write-Host "`n######## $msg ########" -ForegroundColor Magenta
+}
+function Write-Ok($msg)  { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Err($msg) { Write-Host "[XX] $msg" -ForegroundColor Red }
 
 # -----------------------------------------------------------------------------
 Write-Step "1/3 Generation de l'icone"
@@ -97,10 +109,10 @@ class MusicGoLauncher {
     }
 
     [STAThread]
-    static void Main() {
+    static void Main(string[] args) {
         try {
             string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            StubLog("=== Stub start, dir=" + dir + " ===");
+            StubLog("=== Stub start, dir=" + dir + ", argc=" + args.Length + " ===");
 
             string python = Path.Combine(dir, "python", "python.exe");
             string launcher = Path.Combine(dir, "musicgo_launcher.py");
@@ -116,15 +128,22 @@ class MusicGoLauncher {
                 return;
             }
 
+            // Forward args (e.g. --minimized) au python script
+            string forwarded = "";
+            foreach (string a in args) {
+                forwarded += " \"" + a.Replace("\"", "\\\"") + "\"";
+            }
+            string pyArgs = "\"" + launcher + "\"" + forwarded;
+
             var psi = new ProcessStartInfo {
                 FileName = python,
-                Arguments = "\"" + launcher + "\"",
+                Arguments = pyArgs,
                 WorkingDirectory = dir,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
 
-            StubLog("Starting: " + python + " \"" + launcher + "\"");
+            StubLog("Starting: " + python + " " + pyArgs);
             var proc = Process.Start(psi);
             StubLog("Process started, PID=" + proc.Id);
 
@@ -243,8 +262,14 @@ if ($LASTEXITCODE -ne 0) { throw "Compilation Inno Setup a echoue (exit $LASTEXI
 $output = Join-Path $ScriptDir "output"
 $setup = Get-ChildItem -Path $output -Filter "MusicGo-Setup-*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
+if ($script:_stepName -ne $null) {
+    $s = [math]::Round($script:_stepSw.Elapsed.TotalSeconds, 1)
+    Write-Host "    [temps: ${s}s]" -ForegroundColor DarkGray
+}
+
+$total = [math]::Round($script:_buildSw.Elapsed.TotalSeconds, 1)
 Write-Host ""
-Write-Ok "Build complet termine"
+Write-Ok "Build complet termine  [total: ${total}s]"
 if ($setup) {
     $sizeMB = [math]::Round($setup.Length / 1MB, 1)
     Write-Host "Installeur : $($setup.FullName) ($sizeMB MB)" -ForegroundColor Cyan

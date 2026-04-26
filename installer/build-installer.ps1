@@ -23,6 +23,10 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+$script:_buildSw = [Diagnostics.Stopwatch]::StartNew()
+$script:_stepSw  = [Diagnostics.Stopwatch]::StartNew()
+$script:_stepName = $null
+
 # Versions figées pour des builds reproductibles
 $PYTHON_VERSION   = "3.11.9"
 $PYTHON_URL       = "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-embed-amd64.zip"
@@ -40,7 +44,15 @@ $FfmpegDir  = Join-Path $BundleDir "ffmpeg"
 $YtdlpDir   = Join-Path $BundleDir "yt-dlp"
 $AppDir     = Join-Path $BundleDir "app"
 
-function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
+function Write-Step($msg) {
+    if ($script:_stepName -ne $null) {
+        $s = [math]::Round($script:_stepSw.Elapsed.TotalSeconds, 1)
+        Write-Host "    [temps: ${s}s]" -ForegroundColor DarkGray
+    }
+    $script:_stepName = $msg
+    $script:_stepSw.Restart()
+    Write-Host "`n==> $msg" -ForegroundColor Cyan
+}
 function Write-Ok($msg)   { Write-Host "[OK] $msg"  -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "[!!] $msg"  -ForegroundColor Yellow }
 function Write-Err($msg)  { Write-Host "[XX] $msg"  -ForegroundColor Red }
@@ -321,10 +333,16 @@ Write-Step "10b. Pre-compilation .pyc app + launcher"
 & $pythonExe -m compileall -q -j 0 (Join-Path $BundleDir "musicgo_launcher.py") 2>&1 | Out-Null
 Write-Ok ".pyc compiles"
 
+if ($script:_stepName -ne $null) {
+    $s = [math]::Round($script:_stepSw.Elapsed.TotalSeconds, 1)
+    Write-Host "    [temps: ${s}s]" -ForegroundColor DarkGray
+}
+
 # Taille totale du bundle
 $size = (Get-ChildItem -Path $BundleDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+$total = [math]::Round($script:_buildSw.Elapsed.TotalSeconds, 1)
 Write-Host ""
-Write-Ok "Bundle complet : $BundleDir ($([math]::Round($size, 1)) MB)"
+Write-Ok "Bundle complet : $BundleDir ($([math]::Round($size, 1)) MB)  [total: ${total}s]"
 Write-Host ""
 Write-Host "Etape suivante :" -ForegroundColor Cyan
 Write-Host "  Compilez l'installeur avec Inno Setup :"
