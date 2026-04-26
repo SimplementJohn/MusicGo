@@ -7,7 +7,7 @@
 ; =============================================================================
 
 #define AppName         "MusicGo"
-#define AppVersion      "1.1.0"
+#define AppVersion      "1.1.1"
 #define AppPublisher    "MusicGo"
 #define AppExeName      "MusicGo.exe"
 #define AppGUID         "B8F1C5A0-4E8A-4C9E-8E7D-3D2F9A1B7C5E"
